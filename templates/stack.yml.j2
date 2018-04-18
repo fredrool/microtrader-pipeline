@@ -1,0 +1,410 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Microtrader Pipeline
+
+Parameters:
+  GithubToken:
+    Type: String
+    Description: GitHub Personal Access Token
+    NoEcho: true
+
+Resources:
+  SecretsProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Policies:
+        - PolicyName: SecretsProvisionerPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Sid: Encrypt
+              Effect: Allow
+              Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              Resource:
+                Fn::ImportValue: CfnMasterKeyArn
+            - Sid: ProvisionSecrets
+              Effect: Allow
+              Action:
+              - ssm:GetParameters
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:AddTagsToResource
+              - ssm:ListTagsForResource
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*
+            - Sid: ManageLambdaLogs
+              Effect: Allow
+              Action:
+              - logs:CreateLogStream
+              - logs:DescribeLogStreams
+              - logs:PutLogEvents
+              Resource:
+                Fn::Sub: ${SecretsProvisionerLogGroup.Arn}
+  SecretsProvisioner:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SecretsProvisionerLogGroup
+    Properties:
+      FunctionName:
+        Fn::Sub: ${AWS::StackName}-secretsProvisioner
+      Description:
+        Fn::Sub: ${AWS::StackName} Secrets Provisioner
+      Handler: secrets_provisioner.handler
+      MemorySize: 128
+      Runtime: python2.7
+      Timeout: 300
+      Code:
+        S3Bucket:
+          Fn::Sub: ${AWS::AccountId}-${AWS::Region}-cfn-lambda
+        S3Key: secretsProvisioner.zip
+      Role:
+        Fn::Sub: ${SecretsProvisionerRole.Arn}
+  SecretsProvisionerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${AWS::StackName}-secretsProvisioner
+      RetentionInDays: 7
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+      Policies:
+        - PolicyName: CodePipelinePermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PipelineBucketPermissions
+                Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${PipelineBucket}
+                  - Fn::Sub: arn:aws:s3:::${PipelineBucket}/*
+              - Sid: CodeBuildPermissions
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/microtrader
+                  - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/microtrader-deploy
+              - Sid: PassCloudFormationServiceRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - Fn::Sub: ${CloudFormationServiceRole.Arn}
+              - Sid: CloudFormationPermissions
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:CreateStack
+                  - cloudformation:CreateUploadBucket
+                  - cloudformation:DeleteStack
+                  - cloudformation:Describe*
+                  - cloudformation:List*
+                  - cloudformation:UpdateStack
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                Resource:
+                  - Fn::Sub: arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/microtrader-development*
+                  - Fn::Sub: arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/microtrader-production*
+  CloudFormationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+  PipelineBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: ${AWS::AccountId}-${AWS::Region}-${AWS::StackName}
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::AccountId}-${AWS::StackName}
+  MicrotraderBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+      Policies:
+        - PolicyName: CodeBuildPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:us-east-2:305261792510:log-group:/aws/codebuild/microtrader
+                  - arn:aws:logs:us-east-2:305261792510:log-group:/aws/codebuild/microtrader:*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  Fn::Sub: arn:aws:s3:::${PipelineBucket}/*
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource:
+                  Fn::Sub: arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/dockerproductionaws/microtrader*
+  MicrotraderDeployBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+      Policies:
+        - PolicyName: CodeBuildPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:us-east-2:305261792510:log-group:/aws/codebuild/microtrader-deploy
+                  - arn:aws:logs:us-east-2:305261792510:log-group:/aws/codebuild/microtrader-deploy:*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${PipelineBucket}/*
+  MicrotraderDeployBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: microtrader-deploy
+      Source:
+        Type: CODEPIPELINE
+      Artifacts:
+        Packaging: NONE
+        Type: CODEPIPELINE
+        Name: microtrader-deploy
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 305261792510.dkr.ecr.us-east-2.amazonaws.com/dockerproductionaws/codebuild:latest
+        Type: LINUX_CONTAINER
+      ServiceRole:
+        Fn::Sub: ${MicrotraderDeployBuildRole.Arn}
+  MicrotraderBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: microtrader
+      Source:
+        Type: CODEPIPELINE
+      Artifacts:
+        Packaging: NONE
+        Type: CODEPIPELINE
+        Name: microtrader
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+        Image: 305261792510.dkr.ecr.us-east-2.amazonaws.com/dockerproductionaws/codebuild:latest
+        Type: LINUX_CONTAINER
+      ServiceRole:
+        Fn::Sub: ${MicrotraderBuildRole.Arn}
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: microtrader
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: PipelineBucket
+      RoleArn:
+        Fn::Sub: ${PipelineRole.Arn}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: microtrader
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Owner: fredrool
+                Repo: microtrader
+                Branch: master
+                OAuthToken:
+                  Fn::Sub: ${GithubSecret.Value}
+              OutputArtifacts:
+                - Name: SourceRepository
+            - Name: microtrader-deploy
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Owner: fredrool
+                Repo: microtrader-deploy
+                Branch: master
+                OAuthToken:
+                  Fn::Sub: ${GithubSecret.Value}
+              OutputArtifacts:
+                - Name: DeploymentRepository
+        - Name: Build
+          Actions:
+            - Name: Image
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName:
+                  Ref: MicrotraderBuild
+              InputArtifacts:
+                - Name: SourceRepository
+              OutputArtifacts:
+                - Name: ApplicationVersion
+            - Name: Templates
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName:
+                  Ref: MicrotraderDeployBuild
+              InputArtifacts:
+                - Name: DeploymentRepository
+              OutputArtifacts:
+                - Name: DeploymentTemplates
+        - Name: Development
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: REPLACE_ON_FAILURE
+                RoleArn:
+                  Fn::Sub: ${CloudFormationServiceRole.Arn}
+                Capabilities: CAPABILITY_NAMED_IAM
+                StackName: microtrader-development
+                TemplatePath: DeploymentTemplates::build/microtrader-development-stack.json
+                TemplateConfiguration: DeploymentTemplates::build/microtrader-development-config.json
+                ParameterOverrides: >-
+                  {"MicrotraderImageTag":{"Fn::GetParam": ["ApplicationVersion","build/version.json","Version"]}}
+              InputArtifacts:
+                - Name: DeploymentTemplates
+                - Name: ApplicationVersion
+        - Name: Production
+          Actions:
+            - Name: ChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: production-changeset
+                Capabilities: CAPABILITY_NAMED_IAM
+                StackName: microtrader-production
+                TemplatePath: DeploymentTemplates::build/microtrader-production-stack.json
+                TemplateConfiguration: DeploymentTemplates::build/microtrader-production-config.json
+                ParameterOverrides: >-
+                  {"MicrotraderImageTag":{"Fn::GetParam": ["ApplicationVersion","build/version.json","Version"]}}
+                RoleArn:
+                  Fn::Sub: ${CloudFormationServiceRole.Arn}
+              InputArtifacts:
+                - Name: DeploymentTemplates
+                - Name: ApplicationVersion
+              RunOrder: 1
+            - Name: Approval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: 1
+              RunOrder: 2
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: production-changeset
+                StackName: microtrader-production
+              RunOrder: 3
+  GithubSecret:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken:
+        Fn::Sub: ${SecretsProvisioner.Arn}
+      Name:
+        Fn::Sub: /${AWS::StackName}/github/token
+      Key: GITHUB_TOKEN
+      Value:
+        Ref: GithubToken
+      KmsKeyId:
+        Fn::ImportValue: CfnMasterKey

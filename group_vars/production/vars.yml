@@ -1,0 +1,5 @@
+# STS Role and target account
+Sts.Role: arn:aws:iam::305261792510:role/admin
+
+Stack.Inputs.GithubToken: AQICAHiVW9CvaYVcau8xYWewwtEj+uy4l86zffn76bRFZPzAqAH9GdHF4gE0Fj83M/QBJiVqAAAAhzCBhAYJKoZIhvcNAQcGoHcwdQIBADBwBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDDouTTiXaWdfD3XMlQIBEIBD+eQ26nfnO5LfxnSF8I9zI1a0tL5WHr9Tsg1TRN1LGnG8oX/cYDJP0wRG4yZzi8MsIAc+wxjTS6lHNUZj5acB9B6mxw==
+
